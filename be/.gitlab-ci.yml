@@ -1,0 +1,68 @@
+variables:
+  DOCKER_REPO_URL: "179623033511.dkr.ecr.ap-southeast-1.amazonaws.com/hieunm-ecr"
+  AWS_DEFAULT_REGION: "ap-southeast-1"
+  ECS_SERVICE: go-backend
+
+.rules:
+  mainEnvironmentTriggerRule:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH || $CI_COMMIT_BRANCH == "uat" || $CI_COMMIT_BRANCH == "sit"'
+  mainEnvironmentManualTriggerRule:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH || $CI_COMMIT_BRANCH == "uat" || $CI_COMMIT_BRANCH == "sit"'
+
+.changes:
+  - main.go
+  - Dockerfile
+  - .gitlab-ci.yml
+
+workflow:
+  rules:
+    - if: "$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH"
+      changes: !reference [.changes]
+      variables:
+        ECS_CLUSTER: "hieunm-production-go-cluster"
+        TASK_DEFINITION_NAME: hieunm-production-go-backend
+
+    - if: '$CI_COMMIT_BRANCH == "uat"'
+      changes: !reference [.changes]
+      variables:
+        ECS_CLUSTER: "hieunm-uat-go-cluster"
+        TASK_DEFINITION_NAME: hieunm-uat-go-backend
+
+    - if: '$CI_COMMIT_BRANCH == "sit"'
+      changes: !reference [.changes]
+      variables:
+        ECS_CLUSTER: "hieunm-sit-go-cluster"
+        TASK_DEFINITION_NAME: hieunm-sit-go-backend
+
+    - when: always
+      changes: !reference [.changes]
+
+stages:
+  - build
+  - release
+
+build:
+  rules: !reference [.rules, mainEnvironmentTriggerRule]
+  stage: build
+  script:
+    - aws ecr get-login-password --region ap-southeast-1 | docker login --username AWS --password-stdin 179623033511.dkr.ecr.ap-southeast-1.amazonaws.com
+    - docker build -t hieunm/be:be .
+    - docker tag hieunm/be:be $DOCKER_REPO_URL:be
+    - docker push $DOCKER_REPO_URL:be
+
+release:
+  rules: !reference [.rules, mainEnvironmentManualTriggerRule]
+  stage: release
+  script:
+    - TASK_DEFINITION=$(aws ecs describe-task-definition --task-definition "$TASK_DEFINITION_NAME" --region="${AWS_DEFAULT_REGION}")
+
+    - NEW_TASK_DEFINTIION=$(echo $TASK_DEFINITION | jq --arg IMAGE "$DOCKER_REPO_URL:be" '.taskDefinition | .containerDefinitions[0].image = $IMAGE | del(.taskDefinitionArn) | del(.revision) | del(.status) | del(.requiresAttributes) | del(.compatibilities) | del(.registeredAt) | del(.registeredBy)')
+
+    - NEW_TASK_INFO=$(aws ecs register-task-definition --region "$AWS_DEFAULT_REGION" --cli-input-json "$NEW_TASK_DEFINTIION")
+
+    - NEW_REVISION=$(echo $NEW_TASK_INFO | jq '.taskDefinition.revision')
+
+    - aws ecs update-service
+      --cluster $ECS_CLUSTER
+      --service $ECS_SERVICE
+      --task-definition $TASK_DEFINITION_NAME:$NEW_REVISION

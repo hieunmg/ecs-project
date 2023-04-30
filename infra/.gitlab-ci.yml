@@ -1,0 +1,76 @@
+variables:
+  TF_ROOT: "${CI_PROJECT_DIR}/roots/vpc"
+
+stages:
+  - validate
+  - test
+  - build
+  - deploy
+  - cleanup
+before_script:
+  - cd ${TF_ROOT}
+  - terraform init -backend-config=${S3_BACKEND_CONFIG}
+
+.changes:
+  - roots/vpc/**/*
+  - .gitlab-ci.yml
+
+workflow:
+  rules:
+    - if: "$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH"
+      changes: !reference [.changes]
+      variables:
+        S3_BACKEND_CONFIG: ./conf/production.backend
+        TF_VARS: ./env/production.tfvars
+    - if: '$CI_COMMIT_BRANCH == "uat"'
+      changes: !reference [.changes]
+      variables:
+        S3_BACKEND_CONFIG: ./conf/uat.backend
+        TF_VARS: ./env/uat.tfvars
+    - if: '$CI_COMMIT_BRANCH == "sit"'
+      changes: !reference [.changes]
+      variables:
+        S3_BACKEND_CONFIG: ./conf/sit.backend
+        TF_VARS: ./env/sit.tfvars
+    - changes: !reference [.changes]
+      when: always
+      variables:
+        S3_BACKEND_CONFIG: ./conf/production.backend
+
+fmt:
+  stage: validate
+  script:
+    - terraform fmt --recursive
+  allow_failure: true
+  only:
+    changes: !reference [.changes]
+
+validate:
+  stage: validate
+  script:
+    - terraform validate
+  only:
+    changes: !reference [.changes]
+
+build:
+  stage: build
+  only:
+    - main
+    - uat
+    - sit
+  script:
+    - terraform plan -var-file=${TF_VARS} -out tfplan
+  artifacts:
+    paths:
+      - "${TF_ROOT}/tfplan"
+    expire_in: 1 hour
+
+deploy:
+  stage: deploy
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH || $CI_COMMIT_BRANCH == "uat" || $CI_COMMIT_BRANCH == "sit"'
+      when: manual
+  script:
+    - terraform apply tfplan
+  dependencies:
+    - build

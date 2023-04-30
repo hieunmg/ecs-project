@@ -1,0 +1,5 @@
+bucket         = "hieunm-s3-backend"
+key            = "infra-sit.tfstate"
+region         = "ap-southeast-1"
+encrypt        = true
+dynamodb_table = "hieunm-s3-backend"
